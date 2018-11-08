@@ -102,6 +102,14 @@ function transform(file, api/*, options*/) {
     // Finally remove global Ember import if no globals left
     removeGlobalEmber(root, globalEmber);
 
+    //refer to this link: https://github.com/ember-cli/eslint-plugin-ember/blob/master/docs/rules/no-function-prototype-extensions.md.
+    //turn .property(...) to computed(...)
+    transformPropertyOrObserves(root, 'property');
+    //turn .observes(...) to observer(...)
+    transformPropertyOrObserves(root, 'observes');
+    //turn .on(...) to a method hook.
+    transformOn(root);
+
     // jscodeshift is not so great about giving us control over the resulting whitespace.
     // We'll use a regular expression to try to improve the situation (courtesy of @rwjblue).
     source = beautifyImports(root.toSource(Object.assign({}, OPTS, {
@@ -127,6 +135,90 @@ function transform(file, api/*, options*/) {
 
   return source;
 
+  function transformPropertyOrObserves(root, op) {
+
+    let opMappings = {'property':'computed','observes':'observer'}
+    let opCalls = root.find(j.Property).find(j.CallExpression,{callee:{property:{name:op}}});
+    console.log(op+' calls ', opCalls.length);
+    
+    if (opCalls.length > 0) {
+      let feob = root.find(j.ImportDeclaration,{source:{value:'@ember/object'}});
+      let computSpe = j.importSpecifier(j.identifier(opMappings[op]), j.identifier(opMappings[op]));
+      if (feob.length > 0) {
+        let c = feob.find(j.ImportSpecifier,{imported:{name:opMappings[op]}});
+        if (c.length <= 0) {
+          feob.get('specifiers').push(computSpe);
+        }
+      } else {
+        let importDec = root.find(j.ImportDeclaration);
+        importDec.filter((p,i)=>i == 0).insertBefore(j.importDeclaration([computSpe],j.stringLiteral('@ember/object')));
+      }
+    }
+    opCalls.replaceWith(function(p){
+      let {node} = p;
+      if (node.arguments.length > 0) {
+        node.arguments = [...node.arguments,node.callee.object];
+      } else {
+        node.arguments = [node.callee.object];
+      }
+      node.callee = j.identifier(opMappings[op]);
+      return node;
+    });
+  }
+  
+  function transformOn(root) {
+    let onCalls = root.find(j.Property, {value:{type:'CallExpression', callee:{property:{name:'on'}}}});
+    console.log(mname + ' on calls ', onCalls.length);
+    onCalls.forEach((d)=>{
+      let mname = d.node.value.arguments[0].value;
+      let bodycall = d.node.key.name;
+      let statements = [];
+      if (mname == 'init') {
+        //insert this._super(...arguments);
+        statements.push(j.expressionStatement(
+          j.callExpression(
+            j.memberExpression(
+              j.identifier('this'),j.identifier('_super'), false),[j.spreadElement(j.identifier('arguments'))]
+            )
+          )
+        );
+      }
+      statements.push(j.expressionStatement(
+        j.callExpression(
+          j.memberExpression(
+            j.identifier('this'),j.identifier(bodycall), false),[]
+          )
+        )
+      );
+  
+      let existing = root.find(j.Property, {key:{name:mname}});
+      if (existing.length > 0) {
+        existing = existing.find(j.FunctionExpression).find(j.BlockStatement).find(j.Statement);
+        existing.filter((p,i)=>i == 0).insertBefore(statements);
+      } else {
+        let ret = j.objectProperty(
+          j.identifier(mname), j.functionExpression(
+            null, [], j.blockStatement(
+              statements
+            )
+          )
+        );
+        d.insertAfter(ret);
+      }
+    });
+  
+    onCalls.replaceWith(function(p){
+      let {node} = p;
+      if (node.value.callee.object.arguments) {
+        node.value.arguments = node.value.callee.object.arguments;
+        node.value.callee = node.value.callee.object.callee;
+      } else {
+        node.value = node.value.callee.object;
+      }
+      return node;
+    });
+  
+  }
   /**
    * Loops through the raw JSON data in `mapping.json` and converts each entry
    * into a Mapping instance. The Mapping class lazily reifies its associated
