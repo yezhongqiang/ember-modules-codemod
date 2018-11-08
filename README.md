@@ -29,6 +29,22 @@ export default Component.extend({
 });
 ```
 
+Add functionality to handle the eslint issue:
+Turn code like this:
+    // BAD
+```js
+    abc: function() { /* custom logic */ }.property('xyz'),
+    def: function() { /* custom logic */ }.observes('xyz'),
+    ghi: function() { /* custom logic */ }.on('didInsertElement'),
+```
+Into this:
+    // GOOD
+```js
+    abc: computed('xyz', function() { /* custom logic */ }),
+    def: observer('xyz', function() { /* custom logic */ }),
+    didInsertElement() { /* custom logic */ }
+```
+
 ## Usage
 
 **WARNING**: `jscodeshift`, and thus this codemod, **edit your files in place**.
